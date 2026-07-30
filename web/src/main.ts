@@ -42,6 +42,7 @@ const els = {
   txFile: document.getElementById("tx-file") as HTMLElement,
   txPair: document.getElementById("tx-pair") as HTMLElement,
   txPairCode: document.getElementById("tx-pair-code") as HTMLElement,
+  txQrWrap: document.getElementById("tx-qr-wrap") as HTMLElement,
   qrCanvas: document.getElementById("qr-canvas") as HTMLCanvasElement,
   pairInput: document.getElementById("pair-input") as HTMLInputElement,
   rxStart: document.getElementById("btn-rx-start") as HTMLButtonElement,
@@ -50,6 +51,9 @@ const els = {
   rxPair: document.getElementById("rx-pair") as HTMLElement,
   rxPairCode: document.getElementById("rx-pair-code") as HTMLElement,
   rxPairHint: document.getElementById("rx-pair-hint") as HTMLElement,
+  viewfinder: document.getElementById("viewfinder") as HTMLElement,
+  aimText: document.getElementById("aim-text") as HTMLElement,
+  alignProgressBar: document.getElementById("align-progress-bar") as HTMLElement,
   download: document.getElementById("btn-download") as HTMLAnchorElement,
   cam: document.getElementById("cam") as HTMLVideoElement,
   scanCanvas: document.getElementById("scan-canvas") as HTMLCanvasElement,
@@ -79,6 +83,39 @@ let rxRunning = false;
 let lastUseful = 0;
 let goodputEma = 0;
 let downloadDone = false;
+let didLockBuzz = false;
+let lastHitTs = 0;
+
+type AimState = "idle" | "seeking" | "signal" | "locked" | "receiving" | "mismatch" | "done";
+
+function setAimState(state: AimState, text: string, progress = 0) {
+  const classes = [
+    "aim-idle",
+    "aim-seeking",
+    "aim-signal",
+    "aim-locked",
+    "aim-receiving",
+    "aim-mismatch",
+    "aim-done",
+  ];
+  els.viewfinder.classList.remove(...classes);
+  els.viewfinder.classList.add(`aim-${state}`);
+  els.aimText.textContent = text;
+  els.alignProgressBar.style.width = `${Math.max(0, Math.min(100, progress * 100))}%`;
+}
+
+function buzz(pattern: number | number[] = 40) {
+  try {
+    navigator.vibrate?.(pattern);
+  } catch {
+    /* ignore */
+  }
+}
+
+function setTxWrap(mode: "idle" | "ready" | "streaming") {
+  els.txQrWrap.classList.remove("idle", "ready", "streaming");
+  els.txQrWrap.classList.add(mode);
+}
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -235,6 +272,7 @@ function prepareTxSession(bytes: Uint8Array, name: string): TxSession {
   els.txStart.disabled = false;
   els.txStop.disabled = true;
   els.txNewPair.disabled = false;
+  setTxWrap("ready");
   els.txFile.textContent = `${name} · ${bytes.byteLength.toLocaleString()} B · ETA ${etaText}`;
   setStatus(
     `PAIR ${formatPairDisplay(pair)} locked · type it on the phone first, open camera, then press START STREAM`
@@ -273,11 +311,12 @@ async function startTx() {
   els.txStart.disabled = true;
   els.txStop.disabled = false;
   els.txNewPair.disabled = true;
+  setTxWrap("streaming");
 
   const session = txSession!;
   const { pair, etaText } = showPreparedPair(session, true);
   setStatus(
-    `TX streaming · PAIR ${formatPairDisplay(pair)} · k=${session.k} · ${session.symbol_size}B/frame · ETA ${etaText}`
+    `TX streaming · PAIR ${formatPairDisplay(pair)} · fill phone green box with this QR · ETA ${etaText}`
   );
 
   let frames = 0;
@@ -331,13 +370,14 @@ function stopTx() {
   els.txStart.disabled = !txSession;
   els.txStop.disabled = true;
   els.txNewPair.disabled = !txSession;
-  // Keep the same pair code visible so phone pairing isn't invalidated.
   if (txSession) {
+    setTxWrap("ready");
     showPreparedPair(txSession, false);
     setStatus(
       `TX paused · PAIR ${formatPairDisplay(txSession.pair_code)} unchanged · phone can keep waiting, then START STREAM`
     );
   } else {
+    setTxWrap("idle");
     setPairBanner(
       els.txPair,
       els.txPairCode,
@@ -360,15 +400,18 @@ async function startRx() {
 
   stopRx();
   downloadDone = false;
+  didLockBuzz = false;
+  lastHitTs = 0;
   rxSession = new RxSession();
   rxSession.set_expected_pair(pair);
+  setAimState("seeking", "AIM QR INTO THE BOX");
   setPairBanner(
     els.rxPair,
     els.rxPairCode,
     pair,
     "idle",
     "PAIRING",
-    "aim square at TX QR — camera is not mirrored"
+    "fill the pulsing box with the TX QR — corners turn green when locked"
   );
   renderMetrics({ pairCode: pair, locked: false });
 
@@ -395,7 +438,7 @@ async function startRx() {
   els.rxStart.disabled = true;
   els.rxStop.disabled = false;
   els.download.classList.add("hidden");
-  setStatus(`RX · looking for PAIR ${formatPairDisplay(pair)} · fill the green square with the QR`);
+  setStatus(`RX · PAIR ${formatPairDisplay(pair)} · fill the box with the QR until HUD says LOCKED`);
 
   const scanCtx = els.scanCanvas.getContext("2d", {
     willReadFrequently: true,
@@ -422,7 +465,6 @@ async function startRx() {
         els.scanCanvas.width = w;
         els.scanCanvas.height = h;
       }
-      // Center-crop to the alignment square region (~72% of the short side).
       const short = Math.min(vw, vh);
       const crop = short * 0.78;
       const sx = (vw - crop) / 2;
@@ -435,8 +477,11 @@ async function startRx() {
       }
       localCapture++;
       const status = rxSession.ingest_luma(w, h, luma);
+      const nowHit = performance.now();
+
       if (status === "new" || status === "dup" || status === "red" || status === "complete") {
         localDecode++;
+        lastHitTs = nowHit;
         const p = rxSession.progress;
         let etaLeft = "--";
         if (p > 0.02 && p < 1) {
@@ -450,6 +495,24 @@ async function startRx() {
           etaLeft = `~${fmtEta(typ)} est`;
         }
         if (p > lastProgress) lastProgress = p;
+
+        if (!didLockBuzz) {
+          didLockBuzz = true;
+          buzz([30, 40, 30]);
+        }
+
+        if (status === "complete" || p >= 1) {
+          setAimState("done", "COMPLETE — DOWNLOAD", 1);
+        } else if (p > 0) {
+          setAimState(
+            "receiving",
+            `RECEIVING ${(p * 100).toFixed(0)}% · HOLD STEADY`,
+            p
+          );
+        } else {
+          setAimState("locked", "LOCKED — HOLD STEADY", 0.02);
+        }
+
         setPairBanner(
           els.rxPair,
           els.rxPairCode,
@@ -460,6 +523,8 @@ async function startRx() {
         );
         renderMetrics({ eta: etaLeft });
       } else if (status === "wrong_pair") {
+        lastHitTs = nowHit;
+        setAimState("mismatch", `WRONG PAIR · SAW ${formatPairDisplay(rxSession.pair_code)}`);
         setPairBanner(
           els.rxPair,
           els.rxPairCode,
@@ -468,8 +533,26 @@ async function startRx() {
           "WRONG PAIR",
           `saw ${formatPairDisplay(rxSession.pair_code)} — expected ${formatPairDisplay(pair)}`
         );
+        buzz(80);
       } else if (status === "need_pair") {
+        setAimState("idle", "ENTER PAIR CODE");
         setStatus("Enter pair code on RX");
+      } else {
+        // none — no QR in frame
+        const since = nowHit - lastHitTs;
+        if (rxSession.locked && since < 900) {
+          setAimState(
+            "receiving",
+            `RECEIVING ${(rxSession.progress * 100).toFixed(0)}% · RE-AIM`,
+            rxSession.progress
+          );
+        } else if (rxSession.locked && since >= 900) {
+          setAimState("seeking", "LOST LOCK — CENTER THE QR", rxSession.progress);
+        } else if (since < 500 && lastHitTs > 0) {
+          setAimState("signal", "SIGNAL — CENTER / MOVE CLOSER");
+        } else {
+          setAimState("seeking", "AIM QR INTO THE BOX");
+        }
       }
 
       if (status === "complete" && !downloadDone) {
@@ -537,6 +620,8 @@ function finishDownload() {
       "COMPLETE",
       `crc32=${result.crc32} · tap DOWNLOAD`
     );
+    setAimState("done", "COMPLETE — TAP DOWNLOAD", 1);
+    buzz([40, 50, 40, 50, 80]);
     setStatus(`RX complete · PAIR ${formatPairDisplay(result.pairCode)} · ${result.data.byteLength} bytes`);
     renderMetrics({ progress: 1, locked: true, pairCode: result.pairCode, eta: "done" });
   } catch (e) {
@@ -556,6 +641,9 @@ function stopRx() {
   els.cam.srcObject = null;
   els.rxStart.disabled = false;
   els.rxStop.disabled = true;
+  if (!downloadDone) {
+    setAimState("idle", "CAMERA OFF", 0);
+  }
 }
 
 function resetRx() {
@@ -565,8 +653,11 @@ function resetRx() {
   lastUseful = 0;
   goodputEma = 0;
   downloadDone = false;
+  didLockBuzz = false;
+  lastHitTs = 0;
   els.download.classList.add("hidden");
   const pair = normalizePairInput(els.pairInput.value);
+  setAimState("idle", pair.length === 5 ? "OPEN CAMERA" : "ENTER PAIR CODE", 0);
   setPairBanner(
     els.rxPair,
     els.rxPairCode,

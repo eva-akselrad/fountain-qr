@@ -54,7 +54,10 @@
               <span id="tx-pair-code" class="pair-digits">-----</span>
               <span class="pair-hint">select a file to lock a pair code</span>
             </div>
-            <canvas id="qr-canvas" width="512" height="512" aria-label="QR transmit canvas"></canvas>
+            <div id="tx-qr-wrap" class="tx-qr-wrap idle">
+              <div class="tx-aim-label">PHONE: FILL THE GREEN BOX WITH THIS QR</div>
+              <canvas id="qr-canvas" width="512" height="512" aria-label="QR transmit canvas"></canvas>
+            </div>
           </div>
         </section>
 
@@ -79,9 +82,20 @@
             <button id="btn-rx-reset" type="button">RESET</button>
             <a id="btn-download" class="download hidden" href="#">DOWNLOAD</a>
           </div>
-          <div class="viewfinder">
+          <div id="viewfinder" class="viewfinder aim-seeking">
             <video id="cam" playsinline muted></video>
-            <div class="align-frame" aria-hidden="true"></div>
+            <div id="align-frame" class="align-frame" aria-hidden="true">
+              <span class="corner tl"></span>
+              <span class="corner tr"></span>
+              <span class="corner bl"></span>
+              <span class="corner br"></span>
+              <div class="align-crosshair"></div>
+              <div id="align-progress" class="align-progress"><i id="align-progress-bar"></i></div>
+            </div>
+            <div id="aim-hud" class="aim-hud">
+              <span id="aim-dot" class="aim-dot"></span>
+              <span id="aim-text" class="aim-text">ENTER PAIR CODE</span>
+            </div>
             <div id="rx-pair" class="pair-banner rx idle">
               <span class="pair-label">WAITING</span>
               <span id="rx-pair-code" class="pair-digits">-----</span>
