@@ -21,6 +21,7 @@ type Metrics = {
   symbolSize: number;
   fileId: string;
   pairCode: string;
+  eta: string;
 };
 
 /** Hold each QR long enough for phone AF + decode (~6–7 FPS symbol rate). */
@@ -59,6 +60,7 @@ const els = {
   mFrames: document.getElementById("m-frames") as HTMLElement,
   mLock: document.getElementById("m-lock") as HTMLElement,
   mProgress: document.getElementById("m-progress") as HTMLElement,
+  mEta: document.getElementById("m-eta") as HTMLElement,
   mKsym: document.getElementById("m-ksym") as HTMLElement,
   mFid: document.getElementById("m-fid") as HTMLElement,
 };
@@ -124,6 +126,19 @@ function setPairBanner(
   if (hintEl) hintEl.textContent = hint;
 }
 
+function fmtEta(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return "--";
+  if (sec < 1) return "<1s";
+  if (sec < 60) return `${Math.ceil(sec)}s`;
+  const m = Math.floor(sec / 60);
+  const s = Math.ceil(sec % 60);
+  return `${m}m ${s.toString().padStart(2, "0")}s`;
+}
+
+function fmtEtaRange(best: number, typical: number): string {
+  return `${fmtEta(best)}–${fmtEta(typical)}`;
+}
+
 function renderMetrics(m: Partial<Metrics>) {
   if (m.captureFps !== undefined) els.mCapture.textContent = m.captureFps.toFixed(1);
   if (m.decodeFps !== undefined) els.mDecode.textContent = m.decodeFps.toFixed(1);
@@ -142,6 +157,7 @@ function renderMetrics(m: Partial<Metrics>) {
   }
   if (m.fileId !== undefined) els.mFid.textContent = m.fileId || "--";
   if (m.pairCode !== undefined) els.mPair.textContent = formatPairDisplay(m.pairCode);
+  if (m.eta !== undefined) els.mEta.textContent = m.eta;
 }
 
 /** Draw QR with quiet zone + large modules (pixelated, camera-friendly). */
@@ -187,17 +203,21 @@ async function startTx() {
   if (!fileBytes) return;
   stopTx();
   txSession = new TxSession(fileBytes, fileName);
+  txSession.set_dwell_ms(TX_DWELL_MS);
   txRunning = true;
   els.txStart.disabled = true;
   els.txStop.disabled = false;
   const pair = txSession.pair_code;
+  const etaBest = txSession.eta_best_sec;
+  const etaTyp = txSession.eta_typical_sec;
+  const etaText = fmtEtaRange(etaBest, etaTyp);
   setPairBanner(
     els.txPair,
     els.txPairCode,
     pair,
     "live",
     "PAIR",
-    "type this on the receiving phone"
+    `ETA ${etaText} · keep QR on screen`
   );
   renderMetrics({
     k: txSession.k,
@@ -209,15 +229,17 @@ async function startTx() {
     newF: 0,
     dupF: 0,
     redF: 0,
+    eta: etaText,
   });
   setStatus(
-    `TX · PAIR ${formatPairDisplay(pair)} · k=${txSession.k} · symbol=${txSession.symbol_size}B · dwell ${TX_DWELL_MS}ms`
+    `TX · PAIR ${formatPairDisplay(pair)} · k=${txSession.k} · ${txSession.symbol_size}B/frame · ETA ${etaText}`
   );
 
   let frames = 0;
   let lastMetric = performance.now();
   let lastSwap = 0;
   let current: FrameResult | null = null;
+  let encodeFails = 0;
 
   const loop = (now: number) => {
     if (!txRunning || !txSession) return;
@@ -227,6 +249,7 @@ async function startTx() {
         drawModules(els.qrCanvas, current.size, current.modules);
         lastSwap = now;
         frames++;
+        encodeFails = 0;
       }
       if (now - lastMetric >= 1000) {
         const fps = (frames * 1000) / (now - lastMetric);
@@ -238,14 +261,21 @@ async function startTx() {
           pairCode: txSession.pair_code,
           k: txSession.k,
           symbolSize: txSession.symbol_size,
+          eta: fmtEtaRange(txSession.eta_best_sec, txSession.eta_typical_sec),
         });
         frames = 0;
         lastMetric = now;
       }
     } catch (e) {
-      setStatus(`TX error: ${e}`);
-      stopTx();
-      return;
+      encodeFails++;
+      // Soft-skip transient encode issues; only stop after repeated failure.
+      if (encodeFails > 12) {
+        setStatus(`TX stopped after repeated encode errors: ${e}`);
+        stopTx();
+        return;
+      }
+      current = null;
+      lastSwap = 0;
     }
     txRaf = requestAnimationFrame(loop);
   };
@@ -320,6 +350,8 @@ async function startRx() {
   let localCapture = 0;
   let localDecode = 0;
   let busy = false;
+  let rxStartTs = performance.now();
+  let lastProgress = 0;
 
   const loop = () => {
     if (!rxRunning || !rxSession) return;
@@ -349,14 +381,28 @@ async function startRx() {
       const status = rxSession.ingest_luma(w, h, luma);
       if (status === "new" || status === "dup" || status === "red" || status === "complete") {
         localDecode++;
+        const p = rxSession.progress;
+        let etaLeft = "--";
+        if (p > 0.02 && p < 1) {
+          const elapsed = (performance.now() - rxStartTs) / 1000;
+          const totalEst = elapsed / p;
+          etaLeft = `~${fmtEta(totalEst * (1 - p))} left`;
+        } else if (p >= 1) {
+          etaLeft = "done";
+        } else if (rxSession.k > 0) {
+          const typ = (rxSession.k * 2.0 * TX_DWELL_MS) / 1000;
+          etaLeft = `~${fmtEta(typ)} est`;
+        }
+        if (p > lastProgress) lastProgress = p;
         setPairBanner(
           els.rxPair,
           els.rxPairCode,
           rxSession.pair_code || pair,
           "live",
           "PAIRED",
-          `${rxSession.filename || "file"} · ${(rxSession.progress * 100).toFixed(0)}%`
+          `${rxSession.filename || "file"} · ${(p * 100).toFixed(0)}% · ${etaLeft}`
         );
+        renderMetrics({ eta: etaLeft });
       } else if (status === "wrong_pair") {
         setPairBanner(
           els.rxPair,
@@ -436,7 +482,7 @@ function finishDownload() {
       `crc32=${result.crc32} · tap DOWNLOAD`
     );
     setStatus(`RX complete · PAIR ${formatPairDisplay(result.pairCode)} · ${result.data.byteLength} bytes`);
-    renderMetrics({ progress: 1, locked: true, pairCode: result.pairCode });
+    renderMetrics({ progress: 1, locked: true, pairCode: result.pairCode, eta: "done" });
   } catch (e) {
     downloadDone = false;
     setStatus(`Assemble error: ${e}`);
@@ -486,6 +532,7 @@ function resetRx() {
     symbolSize: 0,
     fileId: "--",
     pairCode: pair || "-----",
+    eta: "--",
   });
   setStatus("RX reset");
 }
@@ -506,9 +553,15 @@ function wireUi() {
     const buf = new Uint8Array(await f.arrayBuffer());
     fileBytes = buf;
     fileName = f.name;
-    els.txFile.textContent = `${f.name} · ${f.size.toLocaleString()} B`;
+    // Rough pre-start ETA using same caps as WASM (~160 B symbols, 160 ms dwell, 2× typical).
+    const approxK = Math.max(1, Math.ceil(f.size / 160));
+    const best = (approxK * TX_DWELL_MS) / 1000;
+    const typ = best * 2;
+    const etaText = fmtEtaRange(best, typ);
+    els.txFile.textContent = `${f.name} · ${f.size.toLocaleString()} B · ETA ${etaText}`;
     els.txStart.disabled = false;
-    setStatus(`File loaded · ${f.size} bytes`);
+    renderMetrics({ eta: etaText });
+    setStatus(`File loaded · ${f.size.toLocaleString()} B · ETA ${etaText} (typical includes fountain overhead)`);
   });
 
   els.pairInput.addEventListener("input", () => {
@@ -565,6 +618,7 @@ async function main() {
     symbolSize: 0,
     fileId: "--",
     pairCode: "-----",
+    eta: "--",
   });
 }
 

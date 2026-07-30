@@ -5,7 +5,7 @@ mod qr;
 use lt::{Decoder, Encoder};
 use packet::{
     choose_symbol_size, crc32, decode_packet, encode_packet, pair_code, pair_code_matches,
-    PacketMeta, QR_CAPACITY,
+    sanitize_filename, PacketMeta, CAMERA_PACKET_CAP, QR_CAPACITY,
 };
 use wasm_bindgen::prelude::*;
 
@@ -29,18 +29,43 @@ pub struct TxSession {
     crc: u32,
     frames: u64,
     pair: String,
+    /// Milliseconds each QR is held on screen (set from JS; default 160).
+    dwell_ms: u32,
+}
+
+fn fit_symbol_size(filename: &str, file_len: usize) -> u16 {
+    let mut sym = choose_symbol_size(filename, file_len) as usize;
+    // Probe-encode a dummy packet; shrink until QR accepts it (kills DataTooLong).
+    while sym >= 1 {
+        let meta = PacketMeta {
+            file_id: 0,
+            total_len: file_len as u64,
+            symbol_size: sym as u16,
+            k: 1,
+            esi: 0,
+            crc32: 0,
+            filename: filename.to_string(),
+        };
+        let dummy = vec![0u8; sym];
+        if let Ok(packet) = encode_packet(&meta, &dummy) {
+            if packet.len() <= CAMERA_PACKET_CAP && qr::can_encode(&packet) {
+                return sym as u16;
+            }
+        }
+        if sym == 1 {
+            break;
+        }
+        sym = (sym * 3 / 4).max(1);
+    }
+    1
 }
 
 #[wasm_bindgen]
 impl TxSession {
     #[wasm_bindgen(constructor)]
     pub fn new(data: &[u8], filename: &str) -> Result<TxSession, JsValue> {
-        let filename = if filename.is_empty() {
-            "file.bin".to_string()
-        } else {
-            filename.to_string()
-        };
-        let symbol_size = choose_symbol_size(&filename, data.len()) as usize;
+        let filename = sanitize_filename(filename);
+        let symbol_size = fit_symbol_size(&filename, data.len()) as usize;
         let file_id = random_file_id();
         let encoder = Encoder::new(file_id, data, symbol_size);
         let crc = crc32(data);
@@ -52,7 +77,12 @@ impl TxSession {
             crc,
             frames: 0,
             pair,
+            dwell_ms: 160,
         })
+    }
+
+    pub fn set_dwell_ms(&mut self, ms: u32) {
+        self.dwell_ms = ms.clamp(40, 2000);
     }
 
     #[wasm_bindgen(getter)]
@@ -85,35 +115,74 @@ impl TxSession {
         QR_CAPACITY as u32
     }
 
-    /// Encode next fountain symbol into a QR module matrix.
-    /// Returns `{ size, modules: Uint8Array (packed bits), esi, packetLen, pairCode }`.
-    pub fn next_frame(&mut self) -> Result<JsValue, JsValue> {
-        let (esi, symbol) = self.encoder.encode_next();
-        let meta = PacketMeta {
-            file_id: self.encoder.file_id,
-            total_len: self.total_len,
-            symbol_size: self.encoder.symbol_size as u16,
-            k: self.encoder.k,
-            esi,
-            crc32: self.crc,
-            filename: self.filename.clone(),
-        };
-        let packet = encode_packet(&meta, &symbol).map_err(|e| JsValue::from_str(&e))?;
-        let packet_len = packet.len() as u32;
-        let (size, modules) = qr::encode_matrix(&packet).map_err(|e| JsValue::from_str(&e))?;
-        self.frames += 1;
+    #[wasm_bindgen(getter)]
+    pub fn filename(&self) -> String {
+        self.filename.clone()
+    }
 
-        let obj = js_sys::Object::new();
-        js_sys::Reflect::set(&obj, &"size".into(), &JsValue::from(size))?;
-        js_sys::Reflect::set(
-            &obj,
-            &"modules".into(),
-            &js_sys::Uint8Array::from(modules.as_slice()).into(),
-        )?;
-        js_sys::Reflect::set(&obj, &"esi".into(), &JsValue::from(esi))?;
-        js_sys::Reflect::set(&obj, &"packetLen".into(), &JsValue::from(packet_len))?;
-        js_sys::Reflect::set(&obj, &"pairCode".into(), &JsValue::from_str(&self.pair))?;
-        Ok(obj.into())
+    /// Best-case ETA seconds (≈ k symbols @ dwell, ideal decode).
+    #[wasm_bindgen(getter)]
+    pub fn eta_best_sec(&self) -> f64 {
+        let rate = 1000.0 / self.dwell_ms.max(1) as f64;
+        self.encoder.k as f64 / rate
+    }
+
+    /// Typical ETA seconds (fountain overhead + miss margin ≈ 2.0×).
+    #[wasm_bindgen(getter)]
+    pub fn eta_typical_sec(&self) -> f64 {
+        self.eta_best_sec() * 2.0
+    }
+
+    /// Encode next fountain symbol into a QR module matrix.
+    /// Returns `{ size, modules, esi, packetLen, pairCode }`.
+    pub fn next_frame(&mut self) -> Result<JsValue, JsValue> {
+        // Shrink-on-failure so DataTooLong never reaches the UI mid-stream.
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            let (esi, symbol) = self.encoder.encode_next();
+            let meta = PacketMeta {
+                file_id: self.encoder.file_id,
+                total_len: self.total_len,
+                symbol_size: self.encoder.symbol_size as u16,
+                k: self.encoder.k,
+                esi,
+                crc32: self.crc,
+                filename: self.filename.clone(),
+            };
+            let packet = match encode_packet(&meta, &symbol) {
+                Ok(p) => p,
+                Err(_) if attempts < 4 => continue,
+                Err(e) => return Err(JsValue::from_str(&e)),
+            };
+            match qr::encode_matrix(&packet) {
+                Ok((size, modules)) => {
+                    let packet_len = packet.len() as u32;
+                    self.frames += 1;
+                    let obj = js_sys::Object::new();
+                    js_sys::Reflect::set(&obj, &"size".into(), &JsValue::from(size))?;
+                    js_sys::Reflect::set(
+                        &obj,
+                        &"modules".into(),
+                        &js_sys::Uint8Array::from(modules.as_slice()).into(),
+                    )?;
+                    js_sys::Reflect::set(&obj, &"esi".into(), &JsValue::from(esi))?;
+                    js_sys::Reflect::set(&obj, &"packetLen".into(), &JsValue::from(packet_len))?;
+                    js_sys::Reflect::set(
+                        &obj,
+                        &"pairCode".into(),
+                        &JsValue::from_str(&self.pair),
+                    )?;
+                    return Ok(obj.into());
+                }
+                Err(_) if attempts < 8 => {
+                    // Skip this ESI and try the next — packet size is fixed per session,
+                    // so a failure here is transient/corrupt; keep streaming.
+                    continue;
+                }
+                Err(e) => return Err(JsValue::from_str(&e)),
+            }
+        }
     }
 }
 
