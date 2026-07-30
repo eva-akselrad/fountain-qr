@@ -1,6 +1,6 @@
 //! Binary packet framing for Fountain QR payloads.
 //! Theoretical QR Version 40-L binary capacity = 2953 bytes.
-//! Camera profile uses a smaller symbol budget so phones can actually lock.
+//! Fast camera profile: larger symbols + lean headers.
 
 use crc32fast::Hasher;
 
@@ -8,12 +8,12 @@ pub const MAGIC: &[u8; 4] = b"FQFT";
 pub const PROTOCOL_VERSION: u8 = 1;
 /// Max QR binary payload (Version 40, ECC L) — absolute ceiling.
 pub const QR_CAPACITY: usize = 2953;
-/// Practical per-frame payload for phone-camera scanning (≈ QR v10–12 @ ECC M).
-pub const CAMERA_SYMBOL_CAP: usize = 160;
-/// Keep filenames short so header + symbol always fits a scannable QR.
-pub const MAX_FILENAME_BYTES: usize = 48;
-/// Absolute max encoded packet bytes we will attempt (ECC M safe margin under V40).
-pub const CAMERA_PACKET_CAP: usize = 220;
+/// Fast camera symbol budget (≈ QR v15–18 @ ECC L).
+pub const CAMERA_SYMBOL_CAP: usize = 400;
+/// Keep filenames short so occasional named frames still fit.
+pub const MAX_FILENAME_BYTES: usize = 32;
+/// Max encoded packet bytes for the fast profile.
+pub const CAMERA_PACKET_CAP: usize = 460;
 /// Fixed header without filename:
 /// magic4 + ver1 + flags1 + file_id8 + total_len8 + symbol_size2 + k4 + esi4 + crc32_4 + name_len1 = 37
 pub const FIXED_HEADER: usize = 37;
@@ -39,12 +39,10 @@ pub fn pair_code(file_id: u64) -> String {
         *c = PAIR_ALPHABET[(n & 31) as usize];
         n >>= 5;
     }
-    // Reverse so high-entropy bits lead visually
     chars.reverse();
     String::from_utf8_lossy(&chars).into_owned()
 }
 
-/// Parse pair code back to a mask-check against file_id (25 bits).
 pub fn pair_code_matches(code: &str, file_id: u64) -> bool {
     let normalized: String = code
         .chars()
@@ -174,12 +172,12 @@ pub fn sanitize_filename(name: &str) -> String {
     }
 }
 
-/// Camera-friendly symbol size: fits header + filename under CAMERA_PACKET_CAP.
-pub fn choose_symbol_size(filename: &str, file_len: usize) -> u16 {
-    let name_len = sanitize_filename(filename).len();
-    let header = FIXED_HEADER + name_len;
-    let room = CAMERA_PACKET_CAP.saturating_sub(header).min(CAMERA_SYMBOL_CAP);
-    let room = room.max(1);
+/// Symbol size sized for lean (no-filename) packets under CAMERA_PACKET_CAP.
+pub fn choose_symbol_size(_filename: &str, file_len: usize) -> u16 {
+    let room = CAMERA_PACKET_CAP
+        .saturating_sub(FIXED_HEADER)
+        .min(CAMERA_SYMBOL_CAP)
+        .max(1);
     let size = if file_len == 0 {
         1
     } else {
@@ -208,6 +206,7 @@ mod tests {
         let name = sanitize_filename(&long);
         assert!(name.len() <= MAX_FILENAME_BYTES);
         let sym = choose_symbol_size(&name, 10_000) as usize;
+        // Lean packet (no name) must fit.
         let meta = PacketMeta {
             file_id: 1,
             total_len: 10_000,
@@ -215,7 +214,7 @@ mod tests {
             k: 10,
             esi: 0,
             crc32: 0,
-            filename: name,
+            filename: String::new(),
         };
         let packet = encode_packet(&meta, &vec![0u8; sym]).unwrap();
         assert!(

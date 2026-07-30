@@ -4,9 +4,7 @@ use qrcode::QrCode;
 use qrcode::types::EcLevel;
 
 /// Encode binary payload as a QR module matrix (packed bits, row-major).
-/// Never fails with DataTooLong for payloads ≤ Version 40-L: shrinks ECC then
-/// retries; last resort truncates is NOT used — caller must size packets.
-/// Returns (size, packed_bits) where packed_bits is MSB-first within each byte.
+/// Prefers ECC L for density/speed; falls back to M then auto.
 pub fn encode_matrix(data: &[u8]) -> Result<(u32, Vec<u8>), String> {
     let code = encode_qr_resilient(data)?;
     let w = code.width();
@@ -31,24 +29,25 @@ pub fn encode_matrix(data: &[u8]) -> Result<(u32, Vec<u8>), String> {
 }
 
 fn encode_qr_resilient(data: &[u8]) -> Result<QrCode, String> {
-    // Prefer M for camera robustness; fall through L; then auto.
-    for level in [EcLevel::M, EcLevel::L] {
+    // L first = denser codes / fewer frames for the same file.
+    for level in [EcLevel::L, EcLevel::M] {
         if let Ok(code) = QrCode::with_error_correction_level(data, level) {
             return Ok(code);
         }
     }
     match QrCode::new(data) {
         Ok(code) => Ok(code),
-        Err(e) => Err(format!("qr encode failed ({e:?}); payload {} B too large — reduce symbol size", data.len())),
+        Err(e) => Err(format!(
+            "qr encode failed ({e:?}); payload {} B too large — reduce symbol size",
+            data.len()
+        )),
     }
 }
 
-/// True if `data` can be encoded as a QR (any ECC).
 pub fn can_encode(data: &[u8]) -> bool {
     encode_qr_resilient(data).is_ok()
 }
 
-/// Decode QR from grayscale luma buffer (row-major, width*height bytes).
 pub fn decode_luma_bytes(width: u32, height: u32, luma: &[u8]) -> Result<Vec<u8>, String> {
     if (width as usize) * (height as usize) != luma.len() {
         return Err("luma size mismatch".into());

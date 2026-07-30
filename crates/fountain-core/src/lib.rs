@@ -35,7 +35,7 @@ pub struct TxSession {
 
 fn fit_symbol_size(filename: &str, file_len: usize) -> u16 {
     let mut sym = choose_symbol_size(filename, file_len) as usize;
-    // Probe-encode a dummy packet; shrink until QR accepts it (kills DataTooLong).
+    // Probe lean (no-filename) packets; shrink until QR accepts.
     while sym >= 1 {
         let meta = PacketMeta {
             file_id: 0,
@@ -44,7 +44,7 @@ fn fit_symbol_size(filename: &str, file_len: usize) -> u16 {
             k: 1,
             esi: 0,
             crc32: 0,
-            filename: filename.to_string(),
+            filename: String::new(),
         };
         let dummy = vec![0u8; sym];
         if let Ok(packet) = encode_packet(&meta, &dummy) {
@@ -77,7 +77,7 @@ impl TxSession {
             crc,
             frames: 0,
             pair,
-            dwell_ms: 160,
+            dwell_ms: 70,
         })
     }
 
@@ -127,20 +127,27 @@ impl TxSession {
         self.encoder.k as f64 / rate
     }
 
-    /// Typical ETA seconds (fountain overhead + miss margin ≈ 2.0×).
+    /// Typical ETA seconds (fountain overhead + miss margin ≈ 1.5×).
     #[wasm_bindgen(getter)]
     pub fn eta_typical_sec(&self) -> f64 {
-        self.eta_best_sec() * 2.0
+        self.eta_best_sec() * 1.5
     }
 
     /// Encode next fountain symbol into a QR module matrix.
     /// Returns `{ size, modules, esi, packetLen, pairCode }`.
     pub fn next_frame(&mut self) -> Result<JsValue, JsValue> {
-        // Shrink-on-failure so DataTooLong never reaches the UI mid-stream.
         let mut attempts = 0;
         loop {
             attempts += 1;
             let (esi, symbol) = self.encoder.encode_next();
+            // Most frames skip the filename so QR stays smaller/faster to scan.
+            // Include name on the first few + every 8th for late joiners.
+            let include_name = esi < 6 || esi % 8 == 0;
+            let name = if include_name {
+                self.filename.clone()
+            } else {
+                String::new()
+            };
             let meta = PacketMeta {
                 file_id: self.encoder.file_id,
                 total_len: self.total_len,
@@ -148,9 +155,22 @@ impl TxSession {
                 k: self.encoder.k,
                 esi,
                 crc32: self.crc,
-                filename: self.filename.clone(),
+                filename: name,
             };
             let packet = match encode_packet(&meta, &symbol) {
+                Ok(p) if p.len() <= CAMERA_PACKET_CAP || !include_name => p,
+                Ok(_) | Err(_) if include_name => {
+                    // Fall back to lean packet without filename.
+                    let lean = PacketMeta {
+                        filename: String::new(),
+                        ..meta
+                    };
+                    match encode_packet(&lean, &symbol) {
+                        Ok(p) => p,
+                        Err(_) if attempts < 4 => continue,
+                        Err(e) => return Err(JsValue::from_str(&e)),
+                    }
+                }
                 Ok(p) => p,
                 Err(_) if attempts < 4 => continue,
                 Err(e) => return Err(JsValue::from_str(&e)),
@@ -175,11 +195,7 @@ impl TxSession {
                     )?;
                     return Ok(obj.into());
                 }
-                Err(_) if attempts < 8 => {
-                    // Skip this ESI and try the next — packet size is fixed per session,
-                    // so a failure here is transient/corrupt; keep streaming.
-                    continue;
-                }
+                Err(_) if attempts < 8 => continue,
                 Err(e) => return Err(JsValue::from_str(&e)),
             }
         }
@@ -334,11 +350,16 @@ impl RxSession {
                 meta.symbol_size as usize,
                 meta.total_len,
             ));
-            self.filename = meta.filename.clone();
+            if !meta.filename.is_empty() {
+                self.filename = meta.filename.clone();
+            }
             self.expected_crc = meta.crc32;
         } else if let Some(ref d) = self.decoder {
             if d.file_id != meta.file_id {
                 return "err:file_id_mismatch".into();
+            }
+            if self.filename.is_empty() && !meta.filename.is_empty() {
+                self.filename = meta.filename.clone();
             }
         }
 

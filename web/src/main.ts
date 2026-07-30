@@ -24,10 +24,10 @@ type Metrics = {
   eta: string;
 };
 
-/** Hold each QR long enough for phone AF + decode (~6–7 FPS symbol rate). */
-const TX_DWELL_MS = 160;
-/** Prefer higher scan resolution so modules stay resolvable. */
-const SCAN_MAX_WIDTH = 1280;
+/** Hold each QR — lower = faster transfer (needs steady aim). */
+const TX_DWELL_MS = 70;
+/** Prefer higher scan resolution so denser modules stay resolvable. */
+const SCAN_MAX_WIDTH = 1440;
 
 const els = {
   tabTx: document.getElementById("tab-tx") as HTMLButtonElement,
@@ -446,7 +446,7 @@ async function startRx() {
         } else if (p >= 1) {
           etaLeft = "done";
         } else if (rxSession.k > 0) {
-          const typ = (rxSession.k * 2.0 * TX_DWELL_MS) / 1000;
+          const typ = (rxSession.k * 1.5 * TX_DWELL_MS) / 1000;
           etaLeft = `~${fmtEta(typ)} est`;
         }
         if (p > lastProgress) lastProgress = p;
