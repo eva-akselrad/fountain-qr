@@ -45,13 +45,14 @@
             </label>
             <button id="btn-tx-start" type="button" disabled>START STREAM</button>
             <button id="btn-tx-stop" type="button" disabled>STOP</button>
+            <button id="btn-tx-newpair" type="button" disabled title="Generate a new pair code for this file">NEW PAIR</button>
             <span id="tx-file" class="file-meta">no file</span>
           </div>
           <div class="tx-stage">
             <div id="tx-pair" class="pair-banner idle">
               <span class="pair-label">PAIR</span>
               <span id="tx-pair-code" class="pair-digits">-----</span>
-              <span class="pair-hint">read this code on the RX phone</span>
+              <span class="pair-hint">select a file to lock a pair code</span>
             </div>
             <canvas id="qr-canvas" width="512" height="512" aria-label="QR transmit canvas"></canvas>
           </div>

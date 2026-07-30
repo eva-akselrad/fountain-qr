@@ -38,6 +38,7 @@ const els = {
   fileInput: document.getElementById("file-input") as HTMLInputElement,
   txStart: document.getElementById("btn-tx-start") as HTMLButtonElement,
   txStop: document.getElementById("btn-tx-stop") as HTMLButtonElement,
+  txNewPair: document.getElementById("btn-tx-newpair") as HTMLButtonElement,
   txFile: document.getElementById("tx-file") as HTMLElement,
   txPair: document.getElementById("tx-pair") as HTMLElement,
   txPairCode: document.getElementById("tx-pair-code") as HTMLElement,
@@ -199,40 +200,84 @@ function switchMode(mode: "tx" | "rx") {
   els.panelRx.classList.toggle("hidden", tx);
 }
 
-async function startTx() {
-  if (!fileBytes) return;
-  stopTx();
-  txSession = new TxSession(fileBytes, fileName);
-  txSession.set_dwell_ms(TX_DWELL_MS);
-  txRunning = true;
-  els.txStart.disabled = true;
-  els.txStop.disabled = false;
-  const pair = txSession.pair_code;
-  const etaBest = txSession.eta_best_sec;
-  const etaTyp = txSession.eta_typical_sec;
-  const etaText = fmtEtaRange(etaBest, etaTyp);
+function showPreparedPair(session: TxSession, streaming: boolean) {
+  const pair = session.pair_code;
+  const etaText = fmtEtaRange(session.eta_best_sec, session.eta_typical_sec);
   setPairBanner(
     els.txPair,
     els.txPairCode,
     pair,
-    "live",
-    "PAIR",
-    `ETA ${etaText} · keep QR on screen`
+    streaming ? "live" : "live",
+    streaming ? "STREAMING" : "PAIR READY",
+    streaming
+      ? `ETA ${etaText} · keep QR on screen`
+      : `enter ${formatPairDisplay(pair)} on phone → OPEN CAMERA → then START STREAM here`
   );
   renderMetrics({
-    k: txSession.k,
-    symbolSize: txSession.symbol_size,
-    fileId: txSession.file_id,
+    k: session.k,
+    symbolSize: session.symbol_size,
+    fileId: session.file_id,
     pairCode: pair,
-    locked: true,
+    locked: false,
     progress: 0,
-    newF: 0,
-    dupF: 0,
-    redF: 0,
     eta: etaText,
   });
+  return { pair, etaText };
+}
+
+/** Create (or recreate) TX session as soon as a file is chosen — pair code is stable until NEW PAIR / new file. */
+function prepareTxSession(bytes: Uint8Array, name: string): TxSession {
+  stopTxLoopOnly();
+  const session = new TxSession(bytes, name);
+  session.set_dwell_ms(TX_DWELL_MS);
+  txSession = session;
+  const { pair, etaText } = showPreparedPair(session, false);
+  els.txStart.disabled = false;
+  els.txStop.disabled = true;
+  els.txNewPair.disabled = false;
+  els.txFile.textContent = `${name} · ${bytes.byteLength.toLocaleString()} B · ETA ${etaText}`;
   setStatus(
-    `TX · PAIR ${formatPairDisplay(pair)} · k=${txSession.k} · ${txSession.symbol_size}B/frame · ETA ${etaText}`
+    `PAIR ${formatPairDisplay(pair)} locked · type it on the phone first, open camera, then press START STREAM`
+  );
+  // Clear canvas until stream starts
+  const ctx = els.qrCanvas.getContext("2d");
+  if (ctx) {
+    els.qrCanvas.width = 256;
+    els.qrCanvas.height = 256;
+    ctx.fillStyle = "#111";
+    ctx.fillRect(0, 0, 256, 256);
+    ctx.fillStyle = "#3dff9a";
+    ctx.font = "14px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("WAITING TO START", 128, 120);
+    ctx.fillStyle = "#888";
+    ctx.fillText(formatPairDisplay(pair), 128, 148);
+  }
+  return session;
+}
+
+function stopTxLoopOnly() {
+  txRunning = false;
+  if (txRaf) cancelAnimationFrame(txRaf);
+  txRaf = 0;
+}
+
+async function startTx() {
+  if (!fileBytes) return;
+  // Reuse prepared session so the pair code does NOT change on start.
+  if (!txSession) {
+    prepareTxSession(fileBytes, fileName);
+  }
+  stopTxLoopOnly();
+  txRunning = true;
+  els.txStart.disabled = true;
+  els.txStop.disabled = false;
+  els.txNewPair.disabled = true;
+
+  const session = txSession!;
+  const { pair, etaText } = showPreparedPair(session, true);
+  setStatus(
+    `TX streaming · PAIR ${formatPairDisplay(pair)} · k=${session.k} · ${session.symbol_size}B/frame · ETA ${etaText}`
   );
 
   let frames = 0;
@@ -268,7 +313,6 @@ async function startTx() {
       }
     } catch (e) {
       encodeFails++;
-      // Soft-skip transient encode issues; only stop after repeated failure.
       if (encodeFails > 12) {
         setStatus(`TX stopped after repeated encode errors: ${e}`);
         stopTx();
@@ -283,13 +327,25 @@ async function startTx() {
 }
 
 function stopTx() {
-  txRunning = false;
-  if (txRaf) cancelAnimationFrame(txRaf);
-  txRaf = 0;
-  els.txStart.disabled = !fileBytes;
+  stopTxLoopOnly();
+  els.txStart.disabled = !txSession;
   els.txStop.disabled = true;
-  if (!txRunning) {
-    setPairBanner(els.txPair, els.txPairCode, "-----", "idle", "PAIR", "start stream to generate code");
+  els.txNewPair.disabled = !txSession;
+  // Keep the same pair code visible so phone pairing isn't invalidated.
+  if (txSession) {
+    showPreparedPair(txSession, false);
+    setStatus(
+      `TX paused · PAIR ${formatPairDisplay(txSession.pair_code)} unchanged · phone can keep waiting, then START STREAM`
+    );
+  } else {
+    setPairBanner(
+      els.txPair,
+      els.txPairCode,
+      "-----",
+      "idle",
+      "PAIR",
+      "select a file to lock a pair code"
+    );
   }
 }
 
