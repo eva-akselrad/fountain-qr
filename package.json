@@ -1,0 +1,19 @@
+{
+  "name": "fountain-qr",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Fountain QR File Transfer PWA — LT erasure codes over sequential QR frames",
+  "scripts": {
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "dev": "npm run build:wasm && vite",
+    "build": "npm run build:wasm && vite build",
+    "preview": "vite preview",
+    "test:rust": "cargo test -p fountain-core"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0",
+    "vite-plugin-pwa": "^0.21.1"
+  }
+}

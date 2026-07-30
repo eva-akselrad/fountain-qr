@@ -1,0 +1,10 @@
+# Dependencies
+/target
+/node_modules
+/dist
+/web/src/wasm
+*.log
+.DS_Store
+.env
+.env.*
+.wrangler

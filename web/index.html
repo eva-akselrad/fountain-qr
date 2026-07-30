@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#000000" />
+    <meta name="description" content="Fountain QR File Transfer — offline erasure-coded optical transfer" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <title>FOUNTAIN QR</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="app" class="shell">
+      <header class="top">
+        <div class="brand">FOUNTAIN QR</div>
+        <div class="mode-toggle" role="tablist">
+          <button id="tab-tx" class="tab active" role="tab" aria-selected="true">TX</button>
+          <button id="tab-rx" class="tab" role="tab" aria-selected="false">RX</button>
+        </div>
+        <button id="btn-install" class="install hidden" type="button">INSTALL</button>
+      </header>
+
+      <aside class="metrics" aria-label="Transfer metrics">
+        <div class="metric"><span class="k">CAPTURE FPS</span><span id="m-capture" class="v">--</span></div>
+        <div class="metric"><span class="k">DECODE FPS</span><span id="m-decode" class="v">--</span></div>
+        <div class="metric"><span class="k">GOODPUT</span><span id="m-goodput" class="v">--</span></div>
+        <div class="metric"><span class="k">FRAMES N/D/R</span><span id="m-frames" class="v">0/0/0</span></div>
+        <div class="metric"><span class="k">LOCK</span><span id="m-lock" class="v lock-off">NO LOCK</span></div>
+        <div class="metric"><span class="k">PROGRESS</span><span id="m-progress" class="v">0%</span></div>
+        <div class="metric"><span class="k">K / SYM</span><span id="m-ksym" class="v">--</span></div>
+        <div class="metric"><span class="k">FILE ID</span><span id="m-fid" class="v">--</span></div>
+      </aside>
+
+      <main class="stage">
+        <section id="panel-tx" class="panel">
+          <div class="controls">
+            <label class="file-btn">
+              <input id="file-input" type="file" hidden />
+              SELECT FILE
+            </label>
+            <button id="btn-tx-start" type="button" disabled>START STREAM</button>
+            <button id="btn-tx-stop" type="button" disabled>STOP</button>
+            <span id="tx-file" class="file-meta">no file</span>
+          </div>
+          <canvas id="qr-canvas" width="512" height="512" aria-label="QR transmit canvas"></canvas>
+        </section>
+
+        <section id="panel-rx" class="panel hidden">
+          <div class="controls">
+            <button id="btn-rx-start" type="button">OPEN CAMERA</button>
+            <button id="btn-rx-stop" type="button" disabled>STOP</button>
+            <button id="btn-rx-reset" type="button">RESET</button>
+            <a id="btn-download" class="download hidden" href="#">DOWNLOAD</a>
+          </div>
+          <div class="viewfinder">
+            <video id="cam" playsinline muted></video>
+            <canvas id="scan-canvas" class="hidden-canvas"></canvas>
+          </div>
+        </section>
+      </main>
+
+      <footer class="status-bar">
+        <span id="status">WASM idle · QR capacity 2953 B · LT fountain</span>
+      </footer>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,17 @@
+[package]
+name = "fountain-core"
+version = "0.1.0"
+edition = "2021"
+description = "Luby Transform fountain codec + QR helpers for Fountain QR File Transfer"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "=0.2.100"
+js-sys = "0.3"
+getrandom = { version = "0.2", features = ["js"] }
+qrcode = { version = "0.14", default-features = false }
+rqrr = "0.7"
+crc32fast = "1.4"

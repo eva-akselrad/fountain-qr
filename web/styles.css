@@ -1,0 +1,252 @@
+:root {
+  --bg: #000000;
+  --fg: #e8e8e8;
+  --dim: #6a6a6a;
+  --accent: #3dff9a;
+  --warn: #ffb020;
+  --danger: #ff4d4d;
+  --line: #1a1a1a;
+  --panel: #050505;
+  --mono: "IBM Plex Mono", "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
+body {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  grid-template-rows: auto 1fr auto;
+  grid-template-areas:
+    "top top"
+    "metrics stage"
+    "status status";
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.top {
+  grid-area: top;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.brand {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+
+.mode-toggle {
+  display: grid;
+  grid-auto-flow: column;
+  gap: 0;
+  border: 1px solid var(--line);
+}
+
+.tab {
+  background: transparent;
+  color: var(--dim);
+  border: 0;
+  padding: 0.45rem 1.1rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tab.active {
+  background: #111;
+  color: var(--accent);
+}
+
+.install {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  padding: 0.4rem 0.8rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+.metrics {
+  grid-area: metrics;
+  display: grid;
+  grid-auto-rows: min-content;
+  gap: 0;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+  padding: 0.5rem 0;
+}
+
+.metric {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.15rem;
+  padding: 0.65rem 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.metric .k {
+  color: var(--dim);
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+}
+
+.metric .v {
+  font-size: 1rem;
+  color: var(--fg);
+  word-break: break-all;
+}
+
+.v.lock-on {
+  color: var(--accent);
+}
+
+.v.lock-off {
+  color: var(--danger);
+}
+
+.stage {
+  grid-area: stage;
+  display: grid;
+  place-items: stretch;
+  min-width: 0;
+  background: #000;
+}
+
+.panel {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+}
+
+.panel.hidden,
+.hidden,
+.hidden-canvas {
+  display: none !important;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.controls button,
+.file-btn,
+.download {
+  background: #0a0a0a;
+  color: var(--fg);
+  border: 1px solid #2a2a2a;
+  padding: 0.45rem 0.75rem;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.controls button:hover:not(:disabled),
+.file-btn:hover,
+.download:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.controls button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.file-meta {
+  color: var(--dim);
+  margin-left: auto;
+}
+
+#qr-canvas {
+  width: min(72vmin, 100%);
+  height: auto;
+  margin: auto;
+  image-rendering: pixelated;
+  background: #fff;
+}
+
+.viewfinder {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #000;
+}
+
+#cam {
+  width: 100%;
+  height: 100%;
+  max-height: calc(100dvh - 9rem);
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+
+.status-bar {
+  grid-area: status;
+  padding: 0.5rem 1rem;
+  border-top: 1px solid var(--line);
+  color: var(--dim);
+  background: var(--panel);
+  font-size: 0.75rem;
+}
+
+@media (max-width: 800px) {
+  .shell {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "top"
+      "metrics"
+      "stage"
+      "status";
+  }
+
+  .metrics {
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(140px, 1fr);
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .metric {
+    border-bottom: 0;
+    border-right: 1px solid var(--line);
+    min-width: 140px;
+  }
+
+  .top {
+    grid-template-columns: 1fr;
+    justify-items: start;
+  }
+}
