@@ -609,15 +609,16 @@ function wireUi() {
     const buf = new Uint8Array(await f.arrayBuffer());
     fileBytes = buf;
     fileName = f.name;
-    // Rough pre-start ETA using same caps as WASM (~160 B symbols, 160 ms dwell, 2× typical).
-    const approxK = Math.max(1, Math.ceil(f.size / 160));
-    const best = (approxK * TX_DWELL_MS) / 1000;
-    const typ = best * 2;
-    const etaText = fmtEtaRange(best, typ);
-    els.txFile.textContent = `${f.name} · ${f.size.toLocaleString()} B · ETA ${etaText}`;
-    els.txStart.disabled = false;
-    renderMetrics({ eta: etaText });
-    setStatus(`File loaded · ${f.size.toLocaleString()} B · ETA ${etaText} (typical includes fountain overhead)`);
+    // Pair code is created NOW — before streaming — so the phone can be set up first.
+    prepareTxSession(buf, f.name);
+  });
+
+  els.txNewPair.addEventListener("click", () => {
+    if (!fileBytes) return;
+    prepareTxSession(fileBytes, fileName);
+    setStatus(
+      `New PAIR ${formatPairDisplay(txSession!.pair_code)} · re-enter on phone, then START STREAM`
+    );
   });
 
   els.pairInput.addEventListener("input", () => {
@@ -631,7 +632,6 @@ function wireUi() {
   els.txStart.addEventListener("click", () => void startTx());
   els.txStop.addEventListener("click", () => {
     stopTx();
-    setStatus("TX stopped");
   });
   els.rxStart.addEventListener("click", () => void startRx());
   els.rxStop.addEventListener("click", () => {
