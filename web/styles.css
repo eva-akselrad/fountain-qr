@@ -433,15 +433,6 @@ body {
   }
 }
 
-.align-frame {
-  position: absolute;
-  width: min(72vmin, 80%);
-  aspect-ratio: 1;
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
-  pointer-events: none;
-  border: 2px solid transparent;
-}
-
 .viewfinder.aim-seeking .align-frame {
   border-color: rgba(255, 176, 32, 0.55);
   animation: frame-pulse-seek 1s ease-in-out infinite;
