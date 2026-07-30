@@ -612,9 +612,10 @@ function finishDownload() {
     copy.set(result.data);
     const blob = new Blob([copy], { type: "application/octet-stream" });
     const url = URL.createObjectURL(blob);
+    const name = result.filename?.trim() || "file.bin";
     els.download.href = url;
-    els.download.download = result.filename || "received.bin";
-    els.download.textContent = `DOWNLOAD ${result.filename}`;
+    els.download.download = name;
+    els.download.textContent = `DOWNLOAD ${name}`;
     els.download.classList.remove("hidden");
     setPairBanner(
       els.rxPair,

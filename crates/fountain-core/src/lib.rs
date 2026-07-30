@@ -35,7 +35,7 @@ pub struct TxSession {
 
 fn fit_symbol_size(filename: &str, file_len: usize) -> u16 {
     let mut sym = choose_symbol_size(filename, file_len) as usize;
-    // Probe lean (no-filename) packets; shrink until QR accepts.
+    // Probe packets that include the filename so every frame can carry the real name.
     while sym >= 1 {
         let meta = PacketMeta {
             file_id: 0,
@@ -44,7 +44,7 @@ fn fit_symbol_size(filename: &str, file_len: usize) -> u16 {
             k: 1,
             esi: 0,
             crc32: 0,
-            filename: String::new(),
+            filename: filename.to_string(),
         };
         let dummy = vec![0u8; sym];
         if let Ok(packet) = encode_packet(&meta, &dummy) {
@@ -140,14 +140,7 @@ impl TxSession {
         loop {
             attempts += 1;
             let (esi, symbol) = self.encoder.encode_next();
-            // Most frames skip the filename so QR stays smaller/faster to scan.
-            // Include name on the first few + every 8th for late joiners.
-            let include_name = esi < 6 || esi % 8 == 0;
-            let name = if include_name {
-                self.filename.clone()
-            } else {
-                String::new()
-            };
+            // Always include filename so RX never falls back to received.bin.
             let meta = PacketMeta {
                 file_id: self.encoder.file_id,
                 total_len: self.total_len,
@@ -155,22 +148,9 @@ impl TxSession {
                 k: self.encoder.k,
                 esi,
                 crc32: self.crc,
-                filename: name,
+                filename: self.filename.clone(),
             };
             let packet = match encode_packet(&meta, &symbol) {
-                Ok(p) if p.len() <= CAMERA_PACKET_CAP || !include_name => p,
-                Ok(_) | Err(_) if include_name => {
-                    // Fall back to lean packet without filename.
-                    let lean = PacketMeta {
-                        filename: String::new(),
-                        ..meta
-                    };
-                    match encode_packet(&lean, &symbol) {
-                        Ok(p) => p,
-                        Err(_) if attempts < 4 => continue,
-                        Err(e) => return Err(JsValue::from_str(&e)),
-                    }
-                }
                 Ok(p) => p,
                 Err(_) if attempts < 4 => continue,
                 Err(e) => return Err(JsValue::from_str(&e)),
@@ -399,10 +379,15 @@ impl RxSession {
             )));
         }
         let obj = js_sys::Object::new();
+        let name = if self.filename.is_empty() {
+            "file.bin".to_string()
+        } else {
+            self.filename.clone()
+        };
         js_sys::Reflect::set(
             &obj,
             &"filename".into(),
-            &JsValue::from_str(&self.filename),
+            &JsValue::from_str(&name),
         )?;
         js_sys::Reflect::set(
             &obj,

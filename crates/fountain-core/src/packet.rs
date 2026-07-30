@@ -172,10 +172,12 @@ pub fn sanitize_filename(name: &str) -> String {
     }
 }
 
-/// Symbol size sized for lean (no-filename) packets under CAMERA_PACKET_CAP.
-pub fn choose_symbol_size(_filename: &str, file_len: usize) -> u16 {
+/// Symbol size sized so header + filename + symbol fit under CAMERA_PACKET_CAP.
+pub fn choose_symbol_size(filename: &str, file_len: usize) -> u16 {
+    let name_len = sanitize_filename(filename).len();
+    let header = FIXED_HEADER + name_len;
     let room = CAMERA_PACKET_CAP
-        .saturating_sub(FIXED_HEADER)
+        .saturating_sub(header)
         .min(CAMERA_SYMBOL_CAP)
         .max(1);
     let size = if file_len == 0 {
@@ -214,7 +216,7 @@ mod tests {
             k: 10,
             esi: 0,
             crc32: 0,
-            filename: String::new(),
+            filename: name.clone(),
         };
         let packet = encode_packet(&meta, &vec![0u8; sym]).unwrap();
         assert!(
@@ -223,5 +225,6 @@ mod tests {
             packet.len(),
             CAMERA_PACKET_CAP
         );
+        assert!(!name.is_empty());
     }
 }
