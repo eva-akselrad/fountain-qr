@@ -89,6 +89,7 @@ let lastHitTs = 0;
 type AimState = "idle" | "seeking" | "signal" | "locked" | "receiving" | "mismatch" | "done";
 
 function setAimState(state: AimState, text: string, progress = 0) {
+  if (!els.viewfinder || !els.aimText || !els.alignProgressBar) return;
   const classes = [
     "aim-idle",
     "aim-seeking",
@@ -113,6 +114,7 @@ function buzz(pattern: number | number[] = 40) {
 }
 
 function setTxWrap(mode: "idle" | "ready" | "streaming") {
+  if (!els.txQrWrap) return;
   els.txQrWrap.classList.remove("idle", "ready", "streaming");
   els.txQrWrap.classList.add(mode);
 }
@@ -229,12 +231,14 @@ function drawModules(canvas: HTMLCanvasElement, size: number, packed: Uint8Array
 
 function switchMode(mode: "tx" | "rx") {
   const tx = mode === "tx";
-  els.tabTx.classList.toggle("active", tx);
-  els.tabRx.classList.toggle("active", !tx);
-  els.tabTx.setAttribute("aria-selected", String(tx));
-  els.tabRx.setAttribute("aria-selected", String(!tx));
-  els.panelTx.classList.toggle("hidden", !tx);
-  els.panelRx.classList.toggle("hidden", tx);
+  els.tabTx?.classList.toggle("active", tx);
+  els.tabRx?.classList.toggle("active", !tx);
+  els.tabTx?.setAttribute("aria-selected", String(tx));
+  els.tabRx?.setAttribute("aria-selected", String(!tx));
+  els.panelTx?.classList.toggle("hidden", !tx);
+  els.panelRx?.classList.toggle("hidden", tx);
+  document.body.dataset.mode = mode;
+  setStatus(tx ? "TX mode" : "RX mode — enter pair code, then OPEN CAMERA");
 }
 
 function showPreparedPair(session: TxSession, streaming: boolean) {
@@ -685,13 +689,40 @@ function resetRx() {
 }
 
 function wireUi() {
-  els.tabTx.addEventListener("click", () => {
-    stopRx();
+  const goTx = () => {
+    try {
+      stopTxLoopOnly();
+    } catch {
+      /* ignore */
+    }
+    try {
+      stopRx();
+    } catch {
+      /* ignore */
+    }
     switchMode("tx");
-  });
-  els.tabRx.addEventListener("click", () => {
-    stopTx();
+  };
+  const goRx = () => {
+    // Switch UI first so a TX teardown error can never block RX on phones.
     switchMode("rx");
+    try {
+      stopTxLoopOnly();
+      if (els.txStart) els.txStart.disabled = !txSession;
+      if (els.txStop) els.txStop.disabled = true;
+      if (els.txNewPair) els.txNewPair.disabled = !txSession;
+      if (txSession) setTxWrap("ready");
+    } catch (e) {
+      console.warn("tx pause on rx switch", e);
+    }
+  };
+
+  els.tabTx?.addEventListener("click", (e) => {
+    e.preventDefault();
+    goTx();
+  });
+  els.tabRx?.addEventListener("click", (e) => {
+    e.preventDefault();
+    goRx();
   });
 
   els.fileInput.addEventListener("change", async () => {
@@ -700,7 +731,6 @@ function wireUi() {
     const buf = new Uint8Array(await f.arrayBuffer());
     fileBytes = buf;
     fileName = f.name;
-    // Pair code is created NOW — before streaming — so the phone can be set up first.
     prepareTxSession(buf, f.name);
   });
 
@@ -746,12 +776,40 @@ function wireUi() {
 }
 
 async function main() {
-  wireUi();
+  // Wire UI before WASM so TX/RX tabs always work even if WASM is still loading.
+  try {
+    wireUi();
+  } catch (e) {
+    console.error("wireUi failed", e);
+    document.getElementById("tab-rx")?.addEventListener("click", () => {
+      document.getElementById("panel-tx")?.classList.add("hidden");
+      document.getElementById("panel-rx")?.classList.remove("hidden");
+    });
+    document.getElementById("tab-tx")?.addEventListener("click", () => {
+      document.getElementById("panel-rx")?.classList.add("hidden");
+      document.getElementById("panel-tx")?.classList.remove("hidden");
+    });
+  }
+
+  // Kick service worker to drop stale HTML/JS pairs that break phones.
+  try {
+    const regs = await navigator.serviceWorker?.getRegistrations();
+    for (const r of regs ?? []) {
+      void r.update();
+    }
+  } catch {
+    /* ignore */
+  }
+
   setStatus("Loading WASM…");
-  await init();
-  setStatus(
-    `WASM ready · capacity ceiling ${qr_capacity()} B · camera profile ≤200 B/frame · unmirrored RX`
-  );
+  try {
+    await init();
+    setStatus(
+      `WASM ready · capacity ceiling ${qr_capacity()} B · fast camera profile · unmirrored RX`
+    );
+  } catch (e) {
+    setStatus(`WASM load failed (UI still works): ${e}`);
+  }
   renderMetrics({
     captureFps: 0,
     decodeFps: 0,
@@ -767,6 +825,7 @@ async function main() {
     pairCode: "-----",
     eta: "--",
   });
+  setAimState("idle", "ENTER PAIR CODE", 0);
 }
 
 main().catch((e) => setStatus(`Boot failure: ${e}`));

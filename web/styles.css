@@ -53,6 +53,9 @@ body {
   padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--line);
   background: var(--panel);
+  position: sticky;
+  top: 0;
+  z-index: 100;
 }
 
 .brand {
@@ -66,15 +69,23 @@ body {
   grid-auto-flow: column;
   gap: 0;
   border: 1px solid var(--line);
+  z-index: 101;
+  position: relative;
 }
 
 .tab {
   background: transparent;
   color: var(--dim);
   border: 0;
-  padding: 0.45rem 1.1rem;
+  padding: 0.65rem 1.25rem;
+  min-height: 44px;
+  min-width: 64px;
   font: inherit;
   cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: rgba(61, 255, 154, 0.25);
+  position: relative;
+  z-index: 102;
 }
 
 .tab.active {
@@ -344,6 +355,16 @@ body {
   transform: none;
 }
 
+.align-frame {
+  position: absolute;
+  width: min(72vmin, 80%);
+  aspect-ratio: 1;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  border: 2px solid transparent;
+  z-index: 1;
+}
+
 .aim-hud {
   position: absolute;
   top: 0.85rem;
@@ -357,6 +378,7 @@ body {
   font-size: 0.85rem;
   letter-spacing: 0.16em;
   font-weight: 700;
+  pointer-events: none;
 }
 
 .aim-dot {

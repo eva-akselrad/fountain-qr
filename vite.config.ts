@@ -28,7 +28,7 @@ export default defineConfig({
         background_color: "#000000",
         display: "standalone",
         orientation: "any",
-        start_url: "/",
+        start_url: "/?v=6",
         icons: [
           {
             src: "icon.svg",
@@ -41,6 +41,9 @@ export default defineConfig({
       workbox: {
         globPatterns: ["**/*.{js,css,html,wasm,svg,ico}"],
         maximumFileSizeToCacheInBytes: 12 * 1024 * 1024,
+        cleanupOutdatedCaches: true,
+        clientsClaim: true,
+        skipWaiting: true,
       },
     }),
   ],
