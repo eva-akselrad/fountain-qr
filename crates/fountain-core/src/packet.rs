@@ -1,15 +1,20 @@
 //! Binary packet framing for Fountain QR payloads.
-//! QR Version 40-L binary capacity = 2953 bytes.
+//! Theoretical QR Version 40-L binary capacity = 2953 bytes.
+//! Camera profile uses a smaller symbol budget so phones can actually lock.
 
 use crc32fast::Hasher;
 
 pub const MAGIC: &[u8; 4] = b"FQFT";
 pub const PROTOCOL_VERSION: u8 = 1;
-/// Max QR binary payload (Version 40, ECC L).
+/// Max QR binary payload (Version 40, ECC L) — absolute ceiling.
 pub const QR_CAPACITY: usize = 2953;
+/// Practical per-frame payload for phone-camera scanning (≈ QR v12–15 @ ECC M).
+pub const CAMERA_SYMBOL_CAP: usize = 200;
 /// Fixed header without filename:
 /// magic4 + ver1 + flags1 + file_id8 + total_len8 + symbol_size2 + k4 + esi4 + crc32_4 + name_len1 = 37
 pub const FIXED_HEADER: usize = 37;
+
+const PAIR_ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 #[derive(Clone, Debug)]
 pub struct PacketMeta {
@@ -20,6 +25,37 @@ pub struct PacketMeta {
     pub esi: u32,
     pub crc32: u32,
     pub filename: String,
+}
+
+/// Human pair code from file_id (5 Crockford chars, e.g. `7K3MP`).
+pub fn pair_code(file_id: u64) -> String {
+    let mut n = file_id;
+    let mut chars = [b'0'; 5];
+    for c in chars.iter_mut() {
+        *c = PAIR_ALPHABET[(n & 31) as usize];
+        n >>= 5;
+    }
+    // Reverse so high-entropy bits lead visually
+    chars.reverse();
+    String::from_utf8_lossy(&chars).into_owned()
+}
+
+/// Parse pair code back to a mask-check against file_id (25 bits).
+pub fn pair_code_matches(code: &str, file_id: u64) -> bool {
+    let normalized: String = code
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .map(|c| match c.to_ascii_uppercase() {
+            'I' => '1',
+            'L' => '1',
+            'O' => '0',
+            u => u,
+        })
+        .collect();
+    if normalized.len() != 5 {
+        return false;
+    }
+    pair_code(file_id) == normalized
 }
 
 pub fn max_symbol_payload(filename_len: usize) -> usize {
@@ -110,14 +146,28 @@ pub fn decode_packet(data: &[u8]) -> Result<(PacketMeta, Vec<u8>), String> {
     ))
 }
 
-/// Choose symbol size to pack into QR capacity for a given filename.
+/// Camera-friendly symbol size (capped) so QR modules stay large enough to scan.
 pub fn choose_symbol_size(filename: &str, file_len: usize) -> u16 {
-    let max = max_symbol_payload(filename.len());
-    // Prefer filling the QR; for tiny files use file_len (min 1).
+    let hard_max = max_symbol_payload(filename.len()).min(CAMERA_SYMBOL_CAP);
     let size = if file_len == 0 {
         1
     } else {
-        max.min(file_len).max(1)
+        hard_max.min(file_len).max(1)
     };
     size as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pair_roundtrip_match() {
+        let id = 0xDEAD_BEEF_CAFE_BABEu64;
+        let code = pair_code(id);
+        assert_eq!(code.len(), 5);
+        assert!(pair_code_matches(&code, id));
+        assert!(pair_code_matches(&format!("{}-{}", &code[..2], &code[2..]), id));
+        assert!(!pair_code_matches("00000", id) || pair_code(id) == "00000");
+    }
 }

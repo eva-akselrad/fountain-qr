@@ -121,6 +121,12 @@ body {
   word-break: break-all;
 }
 
+.pair-metric .pair-value {
+  font-size: 1.6rem;
+  letter-spacing: 0.28em;
+  color: var(--accent);
+}
+
 .v.lock-on {
   color: var(--accent);
 }
@@ -188,12 +194,95 @@ body {
   margin-left: auto;
 }
 
+.pair-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid #2a2a2a;
+  padding: 0.25rem 0.5rem;
+  background: #0a0a0a;
+}
+
+.pair-entry span {
+  color: var(--dim);
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+}
+
+.pair-entry input {
+  width: 6.5rem;
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  font: inherit;
+  font-size: 1.1rem;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  outline: none;
+}
+
+.tx-stage {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  place-items: center;
+  gap: 1rem;
+  padding: 1rem;
+  min-height: 0;
+}
+
+.pair-banner {
+  display: grid;
+  justify-items: center;
+  gap: 0.25rem;
+  padding: 0.75rem 1.25rem;
+  border: 1px solid #222;
+  background: #050505;
+  min-width: min(90vw, 28rem);
+}
+
+.pair-banner.live {
+  border-color: var(--accent);
+}
+
+.pair-banner.mismatch {
+  border-color: var(--danger);
+}
+
+.pair-banner.idle {
+  border-color: #222;
+}
+
+.pair-label {
+  color: var(--dim);
+  font-size: 0.7rem;
+  letter-spacing: 0.2em;
+}
+
+.pair-digits {
+  font-size: clamp(2rem, 8vw, 3.4rem);
+  font-weight: 700;
+  letter-spacing: 0.35em;
+  color: var(--accent);
+  padding-left: 0.35em;
+}
+
+.pair-banner.mismatch .pair-digits {
+  color: var(--danger);
+}
+
+.pair-hint {
+  color: var(--dim);
+  font-size: 0.7rem;
+  text-align: center;
+}
+
 #qr-canvas {
   width: min(72vmin, 100%);
   height: auto;
-  margin: auto;
+  margin: 0 auto;
   image-rendering: pixelated;
   background: #fff;
+  padding: 0;
 }
 
 .viewfinder {
@@ -202,14 +291,32 @@ body {
   place-items: center;
   overflow: hidden;
   background: #000;
+  min-height: 50vh;
 }
 
 #cam {
   width: 100%;
   height: 100%;
-  max-height: calc(100dvh - 9rem);
+  max-height: calc(100dvh - 11rem);
   object-fit: cover;
-  transform: scaleX(-1);
+  /* true orientation — do NOT mirror; mirroring breaks aim alignment */
+  transform: none;
+}
+
+.align-frame {
+  position: absolute;
+  width: min(72vmin, 80%);
+  aspect-ratio: 1;
+  border: 2px solid rgba(61, 255, 154, 0.55);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.pair-banner.rx {
+  position: absolute;
+  bottom: 1rem;
+  z-index: 2;
+  background: rgba(0, 0, 0, 0.82);
 }
 
 .status-bar {

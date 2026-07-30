@@ -48,6 +48,10 @@ Requirements: Rust (`wasm32-unknown-unknown`), `wasm-bindgen-cli` 0.2.100, Node 
 - Output directory: `dist`
 - Or: `npx wrangler pages deploy dist`
 
-## Privacy
+## Pairing
 
-All encode/decode runs locally in the browser. No file bytes leave the device.
+1. **TX** starts a stream → large **PAIR** code (5 chars) appears above the QR.
+2. **RX** types that code, then opens the camera (preview is **not** mirrored).
+3. Fill the green square with the QR; RX shows **PAIRED** when codes match.
+
+Camera profile caps symbols at ~200 B/frame with ECC M and ~160 ms dwell so phones can lock. Theoretical Version 40 capacity (2953 B) remains the protocol ceiling.

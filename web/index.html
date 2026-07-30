@@ -21,6 +21,10 @@
       </header>
 
       <aside class="metrics" aria-label="Transfer metrics">
+        <div class="metric pair-metric">
+          <span class="k">PAIR CODE</span>
+          <span id="m-pair" class="v pair-value">-----</span>
+        </div>
         <div class="metric"><span class="k">CAPTURE FPS</span><span id="m-capture" class="v">--</span></div>
         <div class="metric"><span class="k">DECODE FPS</span><span id="m-decode" class="v">--</span></div>
         <div class="metric"><span class="k">GOODPUT</span><span id="m-goodput" class="v">--</span></div>
@@ -42,11 +46,32 @@
             <button id="btn-tx-stop" type="button" disabled>STOP</button>
             <span id="tx-file" class="file-meta">no file</span>
           </div>
-          <canvas id="qr-canvas" width="512" height="512" aria-label="QR transmit canvas"></canvas>
+          <div class="tx-stage">
+            <div id="tx-pair" class="pair-banner idle">
+              <span class="pair-label">PAIR</span>
+              <span id="tx-pair-code" class="pair-digits">-----</span>
+              <span class="pair-hint">read this code on the RX phone</span>
+            </div>
+            <canvas id="qr-canvas" width="512" height="512" aria-label="QR transmit canvas"></canvas>
+          </div>
         </section>
 
         <section id="panel-rx" class="panel hidden">
-          <div class="controls">
+          <div class="controls pair-controls">
+            <label class="pair-entry">
+              <span>PAIR</span>
+              <input
+                id="pair-input"
+                type="text"
+                inputmode="text"
+                autocomplete="off"
+                autocapitalize="characters"
+                spellcheck="false"
+                maxlength="7"
+                placeholder="XXXXX"
+                aria-label="Pair code from TX"
+              />
+            </label>
             <button id="btn-rx-start" type="button">OPEN CAMERA</button>
             <button id="btn-rx-stop" type="button" disabled>STOP</button>
             <button id="btn-rx-reset" type="button">RESET</button>
@@ -54,13 +79,19 @@
           </div>
           <div class="viewfinder">
             <video id="cam" playsinline muted></video>
+            <div class="align-frame" aria-hidden="true"></div>
+            <div id="rx-pair" class="pair-banner rx idle">
+              <span class="pair-label">WAITING</span>
+              <span id="rx-pair-code" class="pair-digits">-----</span>
+              <span id="rx-pair-hint" class="pair-hint">enter TX pair code, then aim at QR</span>
+            </div>
             <canvas id="scan-canvas" class="hidden-canvas"></canvas>
           </div>
         </section>
       </main>
 
       <footer class="status-bar">
-        <span id="status">WASM idle · QR capacity 2953 B · LT fountain</span>
+        <span id="status">WASM idle · camera-friendly QR · LT fountain</span>
       </footer>
     </div>
     <script type="module" src="/src/main.ts"></script>

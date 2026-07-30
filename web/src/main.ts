@@ -5,6 +5,7 @@ type FrameResult = {
   modules: Uint8Array;
   esi: number;
   packetLen: number;
+  pairCode: string;
 };
 
 type Metrics = {
@@ -19,7 +20,13 @@ type Metrics = {
   k: number;
   symbolSize: number;
   fileId: string;
+  pairCode: string;
 };
+
+/** Hold each QR long enough for phone AF + decode (~6–7 FPS symbol rate). */
+const TX_DWELL_MS = 160;
+/** Prefer higher scan resolution so modules stay resolvable. */
+const SCAN_MAX_WIDTH = 1280;
 
 const els = {
   tabTx: document.getElementById("tab-tx") as HTMLButtonElement,
@@ -31,14 +38,21 @@ const els = {
   txStart: document.getElementById("btn-tx-start") as HTMLButtonElement,
   txStop: document.getElementById("btn-tx-stop") as HTMLButtonElement,
   txFile: document.getElementById("tx-file") as HTMLElement,
+  txPair: document.getElementById("tx-pair") as HTMLElement,
+  txPairCode: document.getElementById("tx-pair-code") as HTMLElement,
   qrCanvas: document.getElementById("qr-canvas") as HTMLCanvasElement,
+  pairInput: document.getElementById("pair-input") as HTMLInputElement,
   rxStart: document.getElementById("btn-rx-start") as HTMLButtonElement,
   rxStop: document.getElementById("btn-rx-stop") as HTMLButtonElement,
   rxReset: document.getElementById("btn-rx-reset") as HTMLButtonElement,
+  rxPair: document.getElementById("rx-pair") as HTMLElement,
+  rxPairCode: document.getElementById("rx-pair-code") as HTMLElement,
+  rxPairHint: document.getElementById("rx-pair-hint") as HTMLElement,
   download: document.getElementById("btn-download") as HTMLAnchorElement,
   cam: document.getElementById("cam") as HTMLVideoElement,
   scanCanvas: document.getElementById("scan-canvas") as HTMLCanvasElement,
   status: document.getElementById("status") as HTMLElement,
+  mPair: document.getElementById("m-pair") as HTMLElement,
   mCapture: document.getElementById("m-capture") as HTMLElement,
   mDecode: document.getElementById("m-decode") as HTMLElement,
   mGoodput: document.getElementById("m-goodput") as HTMLElement,
@@ -59,12 +73,9 @@ let rxRaf = 0;
 let mediaStream: MediaStream | null = null;
 let txRunning = false;
 let rxRunning = false;
-
-let captureTicks = 0;
-let decodeTicks = 0;
-let lastMetricTs = performance.now();
 let lastUseful = 0;
 let goodputEma = 0;
+let downloadDone = false;
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -79,6 +90,38 @@ function fmtRate(bps: number): string {
   if (bps < 1000) return `${bps.toFixed(0)} B/s`;
   if (bps < 1_000_000) return `${(bps / 1000).toFixed(1)} KB/s`;
   return `${(bps / 1_000_000).toFixed(2)} MB/s`;
+}
+
+function formatPairDisplay(code: string): string {
+  const c = code.replace(/[^0-9A-Z]/gi, "").toUpperCase();
+  if (c.length <= 3) return c || "-----";
+  return `${c.slice(0, 3)}-${c.slice(3)}`;
+}
+
+function normalizePairInput(raw: string): string {
+  return raw
+    .toUpperCase()
+    .replace(/[IL]/g, "1")
+    .replace(/O/g, "0")
+    .replace(/[^0-9A-Z]/g, "")
+    .slice(0, 5);
+}
+
+function setPairBanner(
+  el: HTMLElement,
+  digits: HTMLElement,
+  code: string,
+  state: "idle" | "live" | "mismatch",
+  label: string,
+  hint: string
+) {
+  digits.textContent = formatPairDisplay(code || "-----");
+  el.classList.remove("idle", "live", "mismatch");
+  el.classList.add(state);
+  const labelEl = el.querySelector(".pair-label");
+  if (labelEl) labelEl.textContent = label;
+  const hintEl = el.querySelector(".pair-hint") as HTMLElement | null;
+  if (hintEl) hintEl.textContent = hint;
 }
 
 function renderMetrics(m: Partial<Metrics>) {
@@ -98,29 +141,36 @@ function renderMetrics(m: Partial<Metrics>) {
     els.mKsym.textContent = `${m.k} / ${m.symbolSize}B`;
   }
   if (m.fileId !== undefined) els.mFid.textContent = m.fileId || "--";
+  if (m.pairCode !== undefined) els.mPair.textContent = formatPairDisplay(m.pairCode);
 }
 
+/** Draw QR with quiet zone + large modules (pixelated, camera-friendly). */
 function drawModules(canvas: HTMLCanvasElement, size: number, packed: Uint8Array) {
+  const quiet = 4;
+  const modulePx = Math.max(4, Math.floor(640 / (size + quiet * 2)));
+  const dim = (size + quiet * 2) * modulePx;
   const ctx = canvas.getContext("2d", { alpha: false })!;
-  if (canvas.width !== size) {
-    canvas.width = size;
-    canvas.height = size;
-  }
-  const img = ctx.createImageData(size, size);
-  const data = img.data;
+  canvas.width = dim;
+  canvas.height = dim;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, dim, dim);
+  ctx.fillStyle = "#000000";
   let bitIndex = 0;
-  for (let i = 0; i < size * size; i++) {
-    const byte = packed[bitIndex >> 3];
-    const on = ((byte >> (7 - (bitIndex & 7))) & 1) === 1;
-    bitIndex++;
-    const o = i * 4;
-    const v = on ? 0 : 255;
-    data[o] = v;
-    data[o + 1] = v;
-    data[o + 2] = v;
-    data[o + 3] = 255;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const byte = packed[bitIndex >> 3];
+      const on = ((byte >> (7 - (bitIndex & 7))) & 1) === 1;
+      bitIndex++;
+      if (on) {
+        ctx.fillRect(
+          (x + quiet) * modulePx,
+          (y + quiet) * modulePx,
+          modulePx,
+          modulePx
+        );
+      }
+    }
   }
-  ctx.putImageData(img, 0, 0);
 }
 
 function switchMode(mode: "tx" | "rx") {
@@ -140,10 +190,20 @@ async function startTx() {
   txRunning = true;
   els.txStart.disabled = true;
   els.txStop.disabled = false;
+  const pair = txSession.pair_code;
+  setPairBanner(
+    els.txPair,
+    els.txPairCode,
+    pair,
+    "live",
+    "PAIR",
+    "type this on the receiving phone"
+  );
   renderMetrics({
     k: txSession.k,
     symbolSize: txSession.symbol_size,
     fileId: txSession.file_id,
+    pairCode: pair,
     locked: true,
     progress: 0,
     newF: 0,
@@ -151,30 +211,36 @@ async function startTx() {
     redF: 0,
   });
   setStatus(
-    `TX streaming · k=${txSession.k} · symbol=${txSession.symbol_size}B · capacity=${qr_capacity()}B`
+    `TX · PAIR ${formatPairDisplay(pair)} · k=${txSession.k} · symbol=${txSession.symbol_size}B · dwell ${TX_DWELL_MS}ms`
   );
 
   let frames = 0;
-  let last = performance.now();
-  const loop = () => {
+  let lastMetric = performance.now();
+  let lastSwap = 0;
+  let current: FrameResult | null = null;
+
+  const loop = (now: number) => {
     if (!txRunning || !txSession) return;
     try {
-      const frame = txSession.next_frame() as unknown as FrameResult;
-      drawModules(els.qrCanvas, frame.size, frame.modules);
-      frames++;
-      captureTicks++;
-      const now = performance.now();
-      if (now - last >= 1000) {
+      if (!current || now - lastSwap >= TX_DWELL_MS) {
+        current = txSession.next_frame() as unknown as FrameResult;
+        drawModules(els.qrCanvas, current.size, current.modules);
+        lastSwap = now;
+        frames++;
+      }
+      if (now - lastMetric >= 1000) {
+        const fps = (frames * 1000) / (now - lastMetric);
         renderMetrics({
-          captureFps: (frames * 1000) / (now - last),
+          captureFps: fps,
           decodeFps: 0,
-          goodputBps: (frame.packetLen * frames * 1000) / (now - last),
+          goodputBps: current ? current.packetLen * fps : 0,
           fileId: txSession.file_id,
+          pairCode: txSession.pair_code,
           k: txSession.k,
           symbolSize: txSession.symbol_size,
         });
         frames = 0;
-        last = now;
+        lastMetric = now;
       }
     } catch (e) {
       setStatus(`TX error: ${e}`);
@@ -192,32 +258,58 @@ function stopTx() {
   txRaf = 0;
   els.txStart.disabled = !fileBytes;
   els.txStop.disabled = true;
+  if (!txRunning) {
+    setPairBanner(els.txPair, els.txPairCode, "-----", "idle", "PAIR", "start stream to generate code");
+  }
 }
 
 async function startRx() {
+  const pair = normalizePairInput(els.pairInput.value);
+  if (pair.length !== 5) {
+    setStatus("Enter the 5-character PAIR code shown on TX first");
+    els.pairInput.focus();
+    return;
+  }
+  els.pairInput.value = formatPairDisplay(pair).replace("-", "");
+
   stopRx();
+  downloadDone = false;
   rxSession = new RxSession();
+  rxSession.set_expected_pair(pair);
+  setPairBanner(
+    els.rxPair,
+    els.rxPairCode,
+    pair,
+    "idle",
+    "PAIRING",
+    "aim square at TX QR — camera is not mirrored"
+  );
+  renderMetrics({ pairCode: pair, locked: false });
+
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
         facingMode: { ideal: "environment" },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-        frameRate: { ideal: 60, min: 30 },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: 30, max: 60 },
       },
     });
   } catch (e) {
     setStatus(`Camera error: ${e}`);
     return;
   }
+
+  // Keep preview unmirrored so left/right match the real world (QR alignment).
+  els.cam.style.transform = "none";
   els.cam.srcObject = mediaStream;
   await els.cam.play();
   rxRunning = true;
   els.rxStart.disabled = true;
   els.rxStop.disabled = false;
   els.download.classList.add("hidden");
-  setStatus("RX scanning · point camera at TX QR stream");
+  setStatus(`RX · looking for PAIR ${formatPairDisplay(pair)} · fill the green square with the QR`);
 
   const scanCtx = els.scanCanvas.getContext("2d", {
     willReadFrequently: true,
@@ -227,37 +319,61 @@ async function startRx() {
   let last = performance.now();
   let localCapture = 0;
   let localDecode = 0;
+  let busy = false;
 
   const loop = () => {
     if (!rxRunning || !rxSession) return;
     const vw = els.cam.videoWidth;
     const vh = els.cam.videoHeight;
-    if (vw && vh) {
-      // Downscale for decode throughput while targeting ~60 capture ticks
-      const maxW = 640;
-      const scale = Math.min(1, maxW / vw);
+    if (vw && vh && !busy) {
+      busy = true;
+      const scale = Math.min(1, SCAN_MAX_WIDTH / vw);
       const w = Math.max(1, Math.floor(vw * scale));
       const h = Math.max(1, Math.floor(vh * scale));
       if (els.scanCanvas.width !== w || els.scanCanvas.height !== h) {
         els.scanCanvas.width = w;
         els.scanCanvas.height = h;
       }
-      scanCtx.drawImage(els.cam, 0, 0, w, h);
+      // Center-crop to the alignment square region (~72% of the short side).
+      const short = Math.min(vw, vh);
+      const crop = short * 0.78;
+      const sx = (vw - crop) / 2;
+      const sy = (vh - crop) / 2;
+      scanCtx.drawImage(els.cam, sx, sy, crop, crop, 0, 0, w, h);
       const rgba = scanCtx.getImageData(0, 0, w, h).data;
       const luma = new Uint8Array(w * h);
       for (let i = 0, j = 0; i < rgba.length; i += 4, j++) {
         luma[j] = (rgba[i] * 77 + rgba[i + 1] * 150 + rgba[i + 2] * 29) >> 8;
       }
       localCapture++;
-      captureTicks++;
       const status = rxSession.ingest_luma(w, h, luma);
-      if (status !== "none") {
+      if (status === "new" || status === "dup" || status === "red" || status === "complete") {
         localDecode++;
-        decodeTicks++;
+        setPairBanner(
+          els.rxPair,
+          els.rxPairCode,
+          rxSession.pair_code || pair,
+          "live",
+          "PAIRED",
+          `${rxSession.filename || "file"} · ${(rxSession.progress * 100).toFixed(0)}%`
+        );
+      } else if (status === "wrong_pair") {
+        setPairBanner(
+          els.rxPair,
+          els.rxPairCode,
+          rxSession.pair_code,
+          "mismatch",
+          "WRONG PAIR",
+          `saw ${formatPairDisplay(rxSession.pair_code)} — expected ${formatPairDisplay(pair)}`
+        );
+      } else if (status === "need_pair") {
+        setStatus("Enter pair code on RX");
       }
-      if (status === "complete") {
+
+      if (status === "complete" && !downloadDone) {
         finishDownload();
       }
+
       renderMetrics({
         locked: rxSession.locked,
         progress: rxSession.progress,
@@ -265,13 +381,15 @@ async function startRx() {
         dupF: Number(rxSession.dup_frames),
         redF: Number(rxSession.red_frames),
         k: rxSession.k,
-        symbolSize: 0,
+        symbolSize: rxSession.symbol_size,
+        pairCode: rxSession.pair_code || pair,
         fileId: rxSession.filename || "--",
       });
+      busy = false;
     }
 
     const now = performance.now();
-    if (now - last >= 1000) {
+    if (now - last >= 1000 && rxSession) {
       const useful = Number(rxSession.useful_bytes);
       const delta = useful - lastUseful;
       lastUseful = useful;
@@ -285,7 +403,6 @@ async function startRx() {
       localCapture = 0;
       localDecode = 0;
       last = now;
-      lastMetricTs = now;
     }
     rxRaf = requestAnimationFrame(loop);
   };
@@ -293,25 +410,35 @@ async function startRx() {
 }
 
 function finishDownload() {
-  if (!rxSession || !rxSession.complete) return;
+  if (!rxSession || !rxSession.complete || downloadDone) return;
+  downloadDone = true;
   try {
     const result = rxSession.take_file() as unknown as {
       filename: string;
       data: Uint8Array;
       crc32: string;
+      pairCode: string;
     };
-    const blob = new Blob([result.data.buffer.slice(
-      result.data.byteOffset,
-      result.data.byteOffset + result.data.byteLength
-    )], { type: "application/octet-stream" });
+    const copy = new Uint8Array(result.data.byteLength);
+    copy.set(result.data);
+    const blob = new Blob([copy], { type: "application/octet-stream" });
     const url = URL.createObjectURL(blob);
     els.download.href = url;
     els.download.download = result.filename || "received.bin";
     els.download.textContent = `DOWNLOAD ${result.filename}`;
     els.download.classList.remove("hidden");
-    setStatus(`RX complete · crc32=${result.crc32} · ${result.data.byteLength} bytes`);
-    renderMetrics({ progress: 1, locked: true });
+    setPairBanner(
+      els.rxPair,
+      els.rxPairCode,
+      result.pairCode,
+      "live",
+      "COMPLETE",
+      `crc32=${result.crc32} · tap DOWNLOAD`
+    );
+    setStatus(`RX complete · PAIR ${formatPairDisplay(result.pairCode)} · ${result.data.byteLength} bytes`);
+    renderMetrics({ progress: 1, locked: true, pairCode: result.pairCode });
   } catch (e) {
+    downloadDone = false;
     setStatus(`Assemble error: ${e}`);
   }
 }
@@ -335,7 +462,17 @@ function resetRx() {
   rxSession = new RxSession();
   lastUseful = 0;
   goodputEma = 0;
+  downloadDone = false;
   els.download.classList.add("hidden");
+  const pair = normalizePairInput(els.pairInput.value);
+  setPairBanner(
+    els.rxPair,
+    els.rxPairCode,
+    pair || "-----",
+    "idle",
+    "WAITING",
+    "enter TX pair code, then aim at QR"
+  );
   renderMetrics({
     captureFps: 0,
     decodeFps: 0,
@@ -348,6 +485,7 @@ function resetRx() {
     k: 0,
     symbolSize: 0,
     fileId: "--",
+    pairCode: pair || "-----",
   });
   setStatus("RX reset");
 }
@@ -371,6 +509,14 @@ function wireUi() {
     els.txFile.textContent = `${f.name} · ${f.size.toLocaleString()} B`;
     els.txStart.disabled = false;
     setStatus(`File loaded · ${f.size} bytes`);
+  });
+
+  els.pairInput.addEventListener("input", () => {
+    const n = normalizePairInput(els.pairInput.value);
+    const caret = els.pairInput.selectionStart ?? n.length;
+    els.pairInput.value = n;
+    els.pairInput.setSelectionRange(Math.min(caret, n.length), Math.min(caret, n.length));
+    renderMetrics({ pairCode: n || "-----" });
   });
 
   els.txStart.addEventListener("click", () => void startTx());
@@ -403,7 +549,9 @@ async function main() {
   wireUi();
   setStatus("Loading WASM…");
   await init();
-  setStatus(`WASM ready · QR capacity ${qr_capacity()} B · LT fountain · Cloudflare Pages PWA`);
+  setStatus(
+    `WASM ready · capacity ceiling ${qr_capacity()} B · camera profile ≤200 B/frame · unmirrored RX`
+  );
   renderMetrics({
     captureFps: 0,
     decodeFps: 0,
@@ -416,6 +564,7 @@ async function main() {
     k: 0,
     symbolSize: 0,
     fileId: "--",
+    pairCode: "-----",
   });
 }
 

@@ -1,19 +1,15 @@
 //! QR encode (matrix) + decode helpers for WASM.
 
 use qrcode::QrCode;
-use qrcode::types::{EcLevel, Version};
+use qrcode::types::EcLevel;
 
-/// Encode binary payload as QR Version 40-L module matrix (packed bits, row-major).
+/// Encode binary payload as a QR module matrix (packed bits, row-major).
+/// Uses ECC M and automatic version sizing for phone-camera reliability.
 /// Returns (size, packed_bits) where packed_bits is MSB-first within each byte.
 pub fn encode_matrix(data: &[u8]) -> Result<(u32, Vec<u8>), String> {
-    // Version 40 => 177 modules. Force V40 when payload fits; otherwise let library pick.
-    let code = if data.len() <= 2953 {
-        QrCode::with_version(data, Version::Normal(40), EcLevel::L)
-            .or_else(|_| QrCode::with_error_correction_level(data, EcLevel::L))
-            .map_err(|e| format!("qr encode: {e:?}"))?
-    } else {
-        return Err("payload exceeds Version 40-L capacity (2953)".into());
-    };
+    let code = QrCode::with_error_correction_level(data, EcLevel::M)
+        .or_else(|_| QrCode::with_error_correction_level(data, EcLevel::L))
+        .map_err(|e| format!("qr encode: {e:?}"))?;
     let w = code.width();
     let mut bits = Vec::with_capacity((w * w + 7) / 8);
     let mut acc = 0u8;

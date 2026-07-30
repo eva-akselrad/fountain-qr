@@ -3,7 +3,10 @@ mod packet;
 mod qr;
 
 use lt::{Decoder, Encoder};
-use packet::{choose_symbol_size, crc32, decode_packet, encode_packet, PacketMeta, QR_CAPACITY};
+use packet::{
+    choose_symbol_size, crc32, decode_packet, encode_packet, pair_code, pair_code_matches,
+    PacketMeta, QR_CAPACITY,
+};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(start)]
@@ -25,6 +28,7 @@ pub struct TxSession {
     total_len: u64,
     crc: u32,
     frames: u64,
+    pair: String,
 }
 
 #[wasm_bindgen]
@@ -40,12 +44,14 @@ impl TxSession {
         let file_id = random_file_id();
         let encoder = Encoder::new(file_id, data, symbol_size);
         let crc = crc32(data);
+        let pair = pair_code(file_id);
         Ok(TxSession {
             encoder,
             filename,
             total_len: data.len() as u64,
             crc,
             frames: 0,
+            pair,
         })
     }
 
@@ -65,6 +71,11 @@ impl TxSession {
     }
 
     #[wasm_bindgen(getter)]
+    pub fn pair_code(&self) -> String {
+        self.pair.clone()
+    }
+
+    #[wasm_bindgen(getter)]
     pub fn frames_emitted(&self) -> u64 {
         self.frames
     }
@@ -75,7 +86,7 @@ impl TxSession {
     }
 
     /// Encode next fountain symbol into a QR module matrix.
-    /// Returns `{ size, modules: Uint8Array (packed bits), esi, packetLen }`.
+    /// Returns `{ size, modules: Uint8Array (packed bits), esi, packetLen, pairCode }`.
     pub fn next_frame(&mut self) -> Result<JsValue, JsValue> {
         let (esi, symbol) = self.encoder.encode_next();
         let meta = PacketMeta {
@@ -101,6 +112,7 @@ impl TxSession {
         )?;
         js_sys::Reflect::set(&obj, &"esi".into(), &JsValue::from(esi))?;
         js_sys::Reflect::set(&obj, &"packetLen".into(), &JsValue::from(packet_len))?;
+        js_sys::Reflect::set(&obj, &"pairCode".into(), &JsValue::from_str(&self.pair))?;
         Ok(obj.into())
     }
 }
@@ -113,6 +125,8 @@ pub struct RxSession {
     expected_crc: u32,
     useful_bytes: u64,
     locked: bool,
+    expected_pair: String,
+    seen_pair: String,
 }
 
 #[wasm_bindgen]
@@ -125,7 +139,34 @@ impl RxSession {
             expected_crc: 0,
             useful_bytes: 0,
             locked: false,
+            expected_pair: String::new(),
+            seen_pair: String::new(),
         }
+    }
+
+    /// Set the pair code shown on the TX device. Packets with other codes are ignored.
+    pub fn set_expected_pair(&mut self, code: &str) {
+        let normalized: String = code
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '-')
+            .map(|c| match c.to_ascii_uppercase() {
+                'I' => '1',
+                'L' => '1',
+                'O' => '0',
+                u => u,
+            })
+            .collect();
+        self.expected_pair = normalized;
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn expected_pair(&self) -> String {
+        self.expected_pair.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn pair_code(&self) -> String {
+        self.seen_pair.clone()
     }
 
     #[wasm_bindgen(getter)]
@@ -146,6 +187,14 @@ impl RxSession {
     #[wasm_bindgen(getter)]
     pub fn k(&self) -> u32 {
         self.decoder.as_ref().map(|d| d.k).unwrap_or(0)
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn symbol_size(&self) -> u32 {
+        self.decoder
+            .as_ref()
+            .map(|d| d.symbol_size as u32)
+            .unwrap_or(0)
     }
 
     #[wasm_bindgen(getter)]
@@ -182,7 +231,7 @@ impl RxSession {
     }
 
     /// Ingest grayscale camera frame. Returns status string:
-    /// "none" | "dup" | "red" | "new" | "complete" | "err:..."
+    /// "none" | "dup" | "red" | "new" | "complete" | "wrong_pair" | "need_pair" | "err:..."
     pub fn ingest_luma(&mut self, width: u32, height: u32, luma: &[u8]) -> String {
         let raw = match qr::decode_luma_bytes(width, height, luma) {
             Ok(b) => b,
@@ -191,12 +240,22 @@ impl RxSession {
         self.ingest_packet(&raw)
     }
 
-    /// Ingest already-extracted packet bytes (for testing / JS QR path).
+    /// Ingest already-extracted packet bytes.
     pub fn ingest_packet(&mut self, data: &[u8]) -> String {
         let (meta, symbol) = match decode_packet(data) {
             Ok(v) => v,
             Err(e) => return format!("err:{e}"),
         };
+
+        let code = pair_code(meta.file_id);
+        self.seen_pair = code.clone();
+
+        if self.expected_pair.is_empty() {
+            return "need_pair".into();
+        }
+        if !pair_code_matches(&self.expected_pair, meta.file_id) {
+            return "wrong_pair".into();
+        }
 
         self.locked = true;
         if self.decoder.is_none() {
@@ -265,6 +324,11 @@ impl RxSession {
             &"crc32".into(),
             &JsValue::from_str(&format!("{got:08x}")),
         )?;
+        js_sys::Reflect::set(
+            &obj,
+            &"pairCode".into(),
+            &JsValue::from_str(&self.seen_pair),
+        )?;
         Ok(obj.into())
     }
 
@@ -274,10 +338,18 @@ impl RxSession {
         self.expected_crc = 0;
         self.useful_bytes = 0;
         self.locked = false;
+        self.seen_pair.clear();
+        // keep expected_pair so user doesn't retype
     }
 }
 
 #[wasm_bindgen]
 pub fn qr_capacity() -> u32 {
     QR_CAPACITY as u32
+}
+
+#[wasm_bindgen]
+pub fn format_pair_code(file_id_hex: &str) -> String {
+    let id = u64::from_str_radix(file_id_hex.trim(), 16).unwrap_or(0);
+    pair_code(id)
 }
